@@ -30,7 +30,6 @@ import (
 	"github.com/cosmos/ibc-go/e2e/testsuite/sanitize"
 	"github.com/cosmos/ibc-go/e2e/testvalues"
 	feetypes "github.com/cosmos/ibc-go/v8/modules/apps/29-fee/types"
-	transfertypes "github.com/cosmos/ibc-go/v8/modules/apps/transfer/types"
 	clienttypes "github.com/cosmos/ibc-go/v8/modules/core/02-client/types"
 	channeltypes "github.com/cosmos/ibc-go/v8/modules/core/04-channel/types"
 )
@@ -278,9 +277,28 @@ func (s *E2ETestSuite) ExecuteGovV1Beta1Proposal(ctx context.Context, chain ibc.
 
 // Transfer broadcasts a MsgTransfer message.
 func (s *E2ETestSuite) Transfer(ctx context.Context, chain ibc.Chain, user ibc.Wallet,
-	portID, channelID string, token sdk.Coin, sender, receiver string, timeoutHeight clienttypes.Height, timeoutTimestamp uint64, memo string,
+	portID, channelID string, tokens sdk.Coins, sender, receiver string, timeoutHeight clienttypes.Height, timeoutTimestamp uint64, memo string,
 ) sdk.TxResponse {
-	msg := transfertypes.NewMsgTransfer(portID, channelID, token, sender, receiver, timeoutHeight, timeoutTimestamp, memo)
+	channel, err := query.Channel(ctx, chain, portID, channelID)
+	s.Require().NoError(err)
+	s.Require().NotNil(channel)
+
+	feeEnabled := false
+	if testvalues.FeeMiddlewareFeatureReleases.IsSupported(chain.Config().Images[0].Version) {
+		feeEnabled, err = query.FeeEnabledChannel(ctx, chain, portID, channelID)
+		s.Require().NoError(err)
+	}
+
+	transferVersion := channel.Version
+	if feeEnabled {
+		version, err := feetypes.MetadataFromVersion(channel.Version)
+		s.Require().NoError(err)
+
+		transferVersion = version.AppVersion
+	}
+
+	msg := GetMsgTransfer(portID, channelID, transferVersion, tokens, sender, receiver, timeoutHeight, timeoutTimestamp, memo)
+
 	return s.BroadcastMessages(ctx, chain, user, msg)
 }
 
@@ -327,7 +345,15 @@ func (*E2ETestSuite) QueryTxsByEvents(
 		return nil, fmt.Errorf("QueryTxsByEvents must be passed a cosmos.CosmosChain")
 	}
 
-	cmd := []string{"txs", "--query", queryReq}
+	cmd := []string{"txs"}
+
+	chainVersion := chain.Config().Images[0].Version
+	if testvalues.TransactionEventQueryFeatureReleases.IsSupported(chainVersion) {
+		cmd = append(cmd, "--query", queryReq)
+	} else {
+		cmd = append(cmd, "--events", queryReq)
+	}
+
 	if orderBy != "" {
 		cmd = append(cmd, "--order_by", orderBy)
 	}
